@@ -1,5 +1,5 @@
-ARG BUILDPLATFORM="linux/amd64"
-ARG BUILDERIMAGE="golang:1.17"
+ARG BUILDPLATFORM="linux/arm64"
+ARG BUILDERIMAGE="golang:1.19"
 ARG BASEIMAGE="gcr.io/distroless/static:nonroot"
 
 FROM --platform=$BUILDPLATFORM $BUILDERIMAGE as builder
@@ -16,7 +16,7 @@ ENV GO111MODULE=on \
     GOARCH=${TARGETARCH} \
     GOARM=${TARGETVARIANT}
 
-WORKDIR /go/src/github.com/developer-guy/cosign-gatekeeper-provider
+WORKDIR /go/src/github.com/sigstore/cosign-gatekeeper-provider
 
 COPY go.mod go.sum ./
 
@@ -30,7 +30,7 @@ FROM $BASEIMAGE
 
 WORKDIR /
 
-COPY --from=builder /go/src/github.com/developer-guy/cosign-gatekeeper-provider .
+COPY --from=builder /go/src/github.com/sigstore/cosign-gatekeeper-provider .
 
 USER 65532:65532
 

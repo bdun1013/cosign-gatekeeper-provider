@@ -15,28 +15,62 @@
 package main
 
 import (
+	"crypto"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
 
-	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
 	"github.com/sigstore/cosign/cmd/cosign/cli/options"
 	"github.com/sigstore/cosign/pkg/cosign"
+	"github.com/sigstore/sigstore/pkg/signature"
 )
 
 const (
-	apiVersion = "externaldata.gatekeeper.sh/v1alpha1"
+	apiVersion = "externaldata.gatekeeper.sh/v1beta1"
+
+	gatekeeperCAFile = "/gatekeeper/ca.crt"
+	cosignPubKeyFile = "/cosign/cosign.pub"
+	serverCert       = "/certs/tls.crt"
+	serverKey        = "/certs/tls.key"
 )
 
 func main() {
 	fmt.Println("starting server...")
-	http.HandleFunc("/validate", validate)
 
-	if err := http.ListenAndServe(":8090", nil); err != nil {
+	gatekeeperCA, err := os.ReadFile(gatekeeperCAFile)
+	if err != nil {
+		fmt.Println(err, "unable to load gatekeeper ca certificate", "gatekeeperCAFile", gatekeeperCAFile)
+		os.Exit(1)
+	}
+
+	gatekeeperCAs := x509.NewCertPool()
+	gatekeeperCAs.AppendCertsFromPEM(gatekeeperCA)
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ClientCAs:  gatekeeperCAs,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/validate", validate)
+
+	server := &http.Server{
+		Addr:              ":8090",
+		Handler:           mux,
+		ReadHeaderTimeout: time.Duration(5) * time.Second,
+		TLSConfig:         tlsConfig,
+	}
+
+	if err := server.ListenAndServeTLS(serverCert, serverKey); err != nil {
 		panic(err)
 	}
 }
@@ -49,7 +83,7 @@ func validate(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// read request body
-	requestBody, err := ioutil.ReadAll(req.Body)
+	requestBody, err := io.ReadAll(req.Body)
 	if err != nil {
 		sendResponse(nil, fmt.Sprintf("unable to read request body: %v", err), w)
 		return
@@ -69,45 +103,76 @@ func validate(w http.ResponseWriter, req *http.Request) {
 	ro := options.RegistryOptions{}
 	co, err := ro.ClientOpts(ctx)
 	if err != nil {
-		sendResponse(nil, fmt.Sprintf("ERROR: %v", err), w)
+		sendResponse(nil, fmt.Sprintf("unable to create cosign registry options: %v", err), w)
 		return
 	}
 
+	// rekorClient := &client.Rekor{}
+
+	// rootCerts, err := fulcio.GetRoots()
+	// if err != nil {
+	// 	sendResponse(nil, fmt.Sprintf("unable to get fulcio roots: %v", err), w)
+	// 	return
+	// }
+
 	// iterate over all keys
 	for _, key := range providerRequest.Request.Keys {
-		fmt.Println("verify signature for:", key)
+		fmt.Println("verifying signature for:", key)
 		ref, err := name.ParseReference(key)
 		if err != nil {
-			sendResponse(nil, fmt.Sprintf("ERROR (ParseReference(%q)): %v", key, err), w)
+			sendResponse(nil, fmt.Sprintf("unable to parse image reference %q): %v", key, err), w)
 			return
 		}
 
-		checkedSignatures, bundleVerified, err := cosign.VerifyImageSignatures(ctx, ref, &cosign.CheckOpts{
-			RekorURL:           "https://rekor.sigstore.dev",
+		cosignPubKey, err := os.ReadFile(cosignPubKeyFile)
+		if err != nil {
+			fmt.Println(err, "unable to load cosign pub key", "cosignPubKeyFile", cosignPubKeyFile)
+			os.Exit(1)
+		}
+
+		ecdsaKey, err := cosign.PemToECDSAKey(cosignPubKey)
+		if err != nil {
+			fmt.Println(err, "unable to convert cosign pub key to ecdsa key", err)
+			os.Exit(1)
+		}
+
+		sigVerifier, err := signature.LoadECDSAVerifier(ecdsaKey, crypto.SHA256)
+		if err != nil {
+			fmt.Println(err, "unable to create sig verifier from cosign pub key", err)
+			os.Exit(1)
+		}
+
+		// sigVerifier, err := signature.LoadPublicKeyRaw(cosignPubKey, crypto.SHA256)
+		// if err != nil {
+		// 	fmt.Println(err, "unable to create sig verifier from cosign pub key", err)
+		// 	os.Exit(1)
+		// }
+
+		// sigVerifier, err := signature.LoadPublicKey(ctx, cosignPubKeyFile)
+		// if err != nil {
+		// 	fmt.Println(err, "unable to create sig verifier from cosign pub key", err)
+		// 	os.Exit(1)
+		// }
+
+		_, _, err = cosign.VerifyImageSignatures(ctx, ref, &cosign.CheckOpts{
+			// RekorClient:        rekorClient,
 			RegistryClientOpts: co,
-			RootCerts:          fulcio.GetRoots(),
+			// RootCerts:          rootCerts,
+			SigVerifier: sigVerifier,
 		})
 
 		if err != nil {
 			fmt.Println(err)
-			sendResponse(nil, fmt.Sprintf("VerifyImageSignatures: %v", err), w)
+			sendResponse(nil, fmt.Sprintf("unable to verify image signatures: %v", err), w)
 			return
 		}
 
-		if bundleVerified {
-			fmt.Println("signature verified for:", key)
-			fmt.Printf("%d number of valid signatures found for %s, found signatures: %v\n", len(checkedSignatures), key, checkedSignatures)
-			results = append(results, externaldata.Item{
-				Key:   key,
-				Value: key + "_valid",
-			})
-		} else {
-			fmt.Printf("no valid signatures found for: %s\n", key)
-			results = append(results, externaldata.Item{
-				Key:   key,
-				Error: key + "_invalid",
-			})
-		}
+		fmt.Println("verified signature for:", key)
+
+		results = append(results, externaldata.Item{
+			Key:   key,
+			Error: key + "_valid",
+		})
 	}
 
 	sendResponse(&results, "", w)

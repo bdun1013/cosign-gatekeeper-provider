@@ -1,13 +1,8 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cosign-gatekeeper-provider
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cosign-gatekeeper-provider
-  namespace: cosign-gatekeeper-provider
+  namespace: gatekeeper-system
 spec:
   replicas: 1
   selector:
@@ -19,12 +14,46 @@ spec:
         run: cosign-gatekeeper-provider
     spec:
       containers:
-      - image: devopps/cosign-gatekeeper-provider:latest
-        imagePullPolicy: IfNotPresent
+      - image: docker.io/bdunnigan/cosign-gatekeeper-provider:latest
+        imagePullPolicy: Always
         name: cosign-gatekeeper-provider
         ports:
         - containerPort: 8090
           protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: gatekeeper-ca-cert
+          mountPath: /gatekeeper
+          readOnly: true
+        - name: cosign-gatekeeper-provider-cert
+          mountPath: /certs
+          readOnly: true
+        - name: cosign-gatekeeper-provider-cosign-pub
+          mountPath: /cosign
+          readOnly: true
+      volumes:
+      - name: gatekeeper-ca-cert
+        secret:
+          secretName: gatekeeper-webhook-server-cert
+          items:
+          - key: ca.crt
+            path: ca.crt
+      - name: cosign-gatekeeper-provider-cert
+        secret:
+          secretName: cosign-gatekeeper-provider-cert
+      - name: cosign-gatekeeper-provider-cosign-pub
+        configMap:
+          name: cosign-gatekeeper-provider-cosign-pub
       restartPolicy: Always
       nodeSelector:
         kubernetes.io/os: linux

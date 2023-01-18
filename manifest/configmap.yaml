@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cosign-gatekeeper-provider-cosign-pub
+data:
+  cosign.pub: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE0HnzO3BdERZC64whrKU7ibfDmeFI
+    DQsiz/1jt8cJ2mxffEUNf5lDYcuJW8I81/j1G+NUASU0UYACAzsp5DyJ2Q==
+    -----END PUBLIC KEY-----
